@@ -1,6 +1,28 @@
 import sys
-import pyautogui
+import mss
+import numpy as np
 from PySide6 import QtWidgets, QtGui, QtCore
+
+
+def get_screen_index_from_cursor(pos: QtCore.QPoint):
+    """返回鼠标所在屏幕的索引"""
+    for i, screen in enumerate(QtWidgets.QApplication.screens()):
+        if screen.geometry().contains(pos):
+            return i
+    return 0
+
+
+def get_screen_pixmap(screen_index=0):
+    """使用 mss 截图指定屏幕，返回 QPixmap 和该屏幕的 QRect"""
+    with mss.mss() as sct:
+        monitor = sct.monitors[screen_index + 1]  # mss 的屏幕从 1 开始
+        sct_img = sct.grab(monitor)
+        img = np.array(sct_img)  # BGRA
+
+        h, w, _ = img.shape
+        bytes_per_line = 4 * w
+        image = QtGui.QImage(img.data, w, h, bytes_per_line, QtGui.QImage.Format_RGBA8888)
+        return QtGui.QPixmap.fromImage(image), QtCore.QRect(monitor["left"], monitor["top"], monitor["width"], monitor["height"])
 
 
 class ScreenshotTool(QtWidgets.QMainWindow):
@@ -13,54 +35,70 @@ class ScreenshotTool(QtWidgets.QMainWindow):
         self.btn.clicked.connect(self.start_snipping)
         self.setCentralWidget(self.btn)
 
+        self.floating_images = []  # ✅ 保存贴图，避免被销毁
+
     def start_snipping(self):
         self.hide()
-        screenshot = pyautogui.screenshot()
-        qimage = QtGui.QImage(
-            screenshot.tobytes(), screenshot.width, screenshot.height, QtGui.QImage.Format_RGB888
-        )
-        pixmap = QtGui.QPixmap.fromImage(qimage)
-        self.snip = SnipOverlay(pixmap)
+
+        cursor_pos = QtGui.QCursor.pos()
+        screen_index = get_screen_index_from_cursor(cursor_pos)
+        self.pixmap, self.screen_geometry = get_screen_pixmap(screen_index)
+
+        self.snip = SnipOverlay(self.pixmap, self.screen_geometry)
         self.snip.snip_done.connect(self.show_floating_image)
         self.snip.showFullScreen()
 
-    def show_floating_image(self, pixmap):
+    def show_floating_image(self, global_pos, pixmap):
         self.show()
-        self.overlay = FloatingImage(pixmap)
+        overlay = FloatingImage(pixmap)
+        overlay.move(global_pos)
+        overlay.show()
+        self.floating_images.append(overlay)  # ✅ 防止被垃圾回收
 
 
 class SnipOverlay(QtWidgets.QWidget):
-    snip_done = QtCore.Signal(QtGui.QPixmap)
+    snip_done = QtCore.Signal(QtCore.QPoint, QtGui.QPixmap)
 
-    def __init__(self, background_pixmap):
+    def __init__(self, background_pixmap, screen_geometry):
         super().__init__()
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        self.setCursor(QtCore.Qt.CrossCursor)
+
+        self.background_pixmap = background_pixmap
+        self.screen_geometry = screen_geometry
+
         self.begin = QtCore.QPoint()
         self.end = QtCore.QPoint()
-        self.background_pixmap = background_pixmap
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.drawPixmap(0, 0, self.background_pixmap)
+        painter.drawPixmap(self.screen_geometry.topLeft(), self.background_pixmap)
         if not self.begin.isNull() and not self.end.isNull():
+            rect = QtCore.QRect(self.begin, self.end)
             painter.setPen(QtGui.QPen(QtCore.Qt.red, 2))
             painter.setBrush(QtCore.Qt.transparent)
-            painter.drawRect(QtCore.QRect(self.begin, self.end))
+            painter.drawRect(rect)
 
     def mousePressEvent(self, event):
-        self.begin = event.pos()
+        self.begin = event.globalPosition().toPoint()
         self.end = self.begin
         self.update()
 
     def mouseMoveEvent(self, event):
-        self.end = event.pos()
+        self.end = event.globalPosition().toPoint()
         self.update()
 
     def mouseReleaseEvent(self, event):
+        self.end = event.globalPosition().toPoint()
         rect = QtCore.QRect(self.begin, self.end).normalized()
-        cropped = self.background_pixmap.copy(rect)
-        self.snip_done.emit(cropped)
+
+        relative_rect = QtCore.QRect(
+            rect.topLeft() - self.screen_geometry.topLeft(),
+            rect.size()
+        )
+        cropped = self.background_pixmap.copy(relative_rect)
+        self.snip_done.emit(rect.topLeft(), cropped)
         self.close()
 
 
@@ -68,13 +106,16 @@ class FloatingImage(QtWidgets.QLabel):
     def __init__(self, pixmap):
         super().__init__()
         self.setPixmap(pixmap)
-        self.setWindowFlags(QtCore.Qt.WindowStaysOnTopHint | QtCore.Qt.FramelessWindowHint)
+        self.setWindowFlags(
+            QtCore.Qt.WindowStaysOnTopHint |
+            QtCore.Qt.FramelessWindowHint |
+            QtCore.Qt.Tool
+        )
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_menu)
         self.setStyleSheet("border: 2px solid red;")
-        self.setScaledContents(True)
+        self.setScaledContents(False)
         self.resize(pixmap.size())
-        self.show()
         self.old_pos = None
 
     def mousePressEvent(self, event):
@@ -84,7 +125,7 @@ class FloatingImage(QtWidgets.QLabel):
     def mouseMoveEvent(self, event):
         if event.buttons() & QtCore.Qt.LeftButton:
             delta = event.globalPosition().toPoint() - self.old_pos
-            self.move(self.x() + delta.x(), self.y() + delta.y())
+            self.move(self.pos() + delta)
             self.old_pos = event.globalPosition().toPoint()
 
     def show_menu(self, pos):
@@ -96,8 +137,11 @@ class FloatingImage(QtWidgets.QLabel):
 
 
 if __name__ == "__main__":
+    # ✅ 必须启用高 DPI 支持
+    QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
+    QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps)
+
     app = QtWidgets.QApplication(sys.argv)
     window = ScreenshotTool()
     window.show()
     sys.exit(app.exec())
-

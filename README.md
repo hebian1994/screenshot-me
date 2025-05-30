@@ -9,3 +9,15 @@ The selection area is pinned to the top layer of the screen by default, with a r
 Clicking on the pinned image on the screen allows you to drag it, 
 
 and right clicking on the image allows you to choose to destroy it.
+
+
+
+![image-20250530205856681](D:\prj_py\screenshot-me\README.assets\image-20250530205856681.png)
+
+
+
+![image-20250530205933439](D:\prj_py\screenshot-me\README.assets\image-20250530205933439.png)
+
+![image-20250530211020141](D:\prj_py\screenshot-me\README.assets\image-20250530211020141.png)
+
+![image-20250530211409532](D:\prj_py\screenshot-me\README.assets\image-20250530211409532.png)

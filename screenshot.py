@@ -20,8 +20,7 @@ def get_screen_pixmap(screen_index=0):
         h, w, _ = img.shape
         bytes_per_line = 4 * w
         image = QtGui.QImage(img.data, w, h, bytes_per_line, QtGui.QImage.Format.Format_ARGB32)
-        return QtGui.QPixmap.fromImage(image), QtCore.QRect(monitor["left"], monitor["top"], monitor["width"],
-                                                            monitor["height"])
+        return QtGui.QPixmap.fromImage(image), QtCore.QRect(monitor["left"], monitor["top"], monitor["width"], monitor["height"])
 
 
 class ScreenshotTool(QtWidgets.QMainWindow):
@@ -70,7 +69,6 @@ class SnipOverlay(QtWidgets.QWidget):
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        # 绘制灰色半透明遮罩
         painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 80))
 
         if not self.begin.isNull() and not self.end.isNull():
@@ -92,7 +90,6 @@ class SnipOverlay(QtWidgets.QWidget):
         self.end = event.globalPosition().toPoint()
         rect = QtCore.QRect(self.begin, self.end).normalized()
 
-        # 因为没背景图，所以用 mss 重新截一次屏幕对应区域
         with mss.mss() as sct:
             monitor = {
                 "left": rect.left(),
@@ -112,43 +109,144 @@ class SnipOverlay(QtWidgets.QWidget):
         self.close()
 
 
-class FloatingImage(QtWidgets.QLabel):
+class FloatingImage(QtWidgets.QWidget):
     def __init__(self, pixmap, parent_tool):
         super().__init__()
-        self.parent_tool = parent_tool  # 保存主窗口引用，用于管理列表
+        self.parent_tool = parent_tool
 
-        self.setPixmap(pixmap)
-        self.setWindowFlags(
-            QtCore.Qt.WindowStaysOnTopHint |
-            QtCore.Qt.FramelessWindowHint |
-            QtCore.Qt.Tool
-        )
+        self.original_pixmap = pixmap.copy()
+        self.canvas = QtGui.QPixmap(pixmap.size())
+        self.canvas.fill(QtCore.Qt.transparent)
+
+        self.image_label = QtWidgets.QLabel(self)
+        self.image_label.setPixmap(self.original_pixmap)
+        self.image_label.setScaledContents(False)
+        self.image_label.resize(pixmap.size())
+
+        self.setWindowFlags(QtCore.Qt.WindowStaysOnTopHint | QtCore.Qt.FramelessWindowHint | QtCore.Qt.Tool)
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_menu)
-        self.setStyleSheet("border: 2px solid red;")
-        self.setScaledContents(False)
+
         self.resize(pixmap.size())
         self.old_pos = None
 
+        self.drawing = False
+        self.draw_mode = None
+        self.last_point = None
+        self.start_point = None
+        self.end_point = None
+
+        self.toolbar = QtWidgets.QWidget(self)
+        self.toolbar.setFixedWidth(80)
+        self.toolbar.setStyleSheet("background-color: #ddd; border-left: 1px solid #aaa;")
+        self.toolbar.move(0, 0)
+        self.toolbar.hide()
+
+        layout = QtWidgets.QVBoxLayout(self.toolbar)
+        layout.setContentsMargins(5, 5, 5, 5)
+
+        self.btn_pencil = QtWidgets.QPushButton("铅笔")
+        self.btn_rect = QtWidgets.QPushButton("矩形")
+        self.btn_cancel = QtWidgets.QPushButton("取消")
+
+        layout.addWidget(self.btn_pencil)
+        layout.addWidget(self.btn_rect)
+        layout.addWidget(self.btn_cancel)
+
+        self.btn_pencil.clicked.connect(self.set_pencil_mode)
+        self.btn_rect.clicked.connect(self.set_rect_mode)
+        self.btn_cancel.clicked.connect(self.cancel_draw_mode)
+
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
-            self.old_pos = event.globalPosition().toPoint()
+            if self.draw_mode in ('pencil', 'rect'):
+                self.drawing = True
+                self.start_point = event.pos()
+                self.last_point = event.pos()
+            else:
+                self.old_pos = event.globalPosition().toPoint()
 
     def mouseMoveEvent(self, event):
-        if event.buttons() & QtCore.Qt.LeftButton:
+        if self.drawing and self.draw_mode == 'pencil':
+            painter = QtGui.QPainter(self.canvas)
+            pen = QtGui.QPen(QtCore.Qt.red, 2)
+            painter.setPen(pen)
+            painter.drawLine(self.last_point, event.pos())
+            self.last_point = event.pos()
+            self.update_image()
+        elif self.drawing and self.draw_mode == 'rect':
+            self.end_point = event.pos()
+            self.update_image()
+        elif event.buttons() & QtCore.Qt.LeftButton and self.draw_mode is None:
             delta = event.globalPosition().toPoint() - self.old_pos
             self.move(self.pos() + delta)
             self.old_pos = event.globalPosition().toPoint()
 
+    def mouseReleaseEvent(self, event):
+        if self.drawing and self.draw_mode == 'rect':
+            painter = QtGui.QPainter(self.canvas)
+            pen = QtGui.QPen(QtCore.Qt.red, 2)
+            painter.setPen(pen)
+            rect = QtCore.QRect(self.start_point, event.pos()).normalized()
+            painter.drawRect(rect)
+        self.drawing = False
+        self.start_point = None
+        self.end_point = None
+        self.update_image()
+
+    def update_image(self):
+        result = self.original_pixmap.copy()
+        painter = QtGui.QPainter(result)
+        painter.drawPixmap(0, 0, self.canvas)
+        if self.drawing and self.draw_mode == 'rect' and self.start_point and self.end_point:
+            painter.setPen(QtGui.QPen(QtCore.Qt.red, 2))
+            painter.setBrush(QtCore.Qt.transparent)
+            rect = QtCore.QRect(self.start_point, self.end_point).normalized()
+            painter.drawRect(rect)
+        painter.end()
+        self.image_label.setPixmap(result)
+
     def show_menu(self, pos):
         menu = QtWidgets.QMenu()
         close_action = menu.addAction("销毁图片")
+        draw_action = menu.addAction("取消绘制" if self.draw_mode else "绘制")
+        copy_action = menu.addAction("复制图片")
+
         action = menu.exec(self.mapToGlobal(pos))
+
         if action == close_action:
             self.close()
+        elif action == draw_action:
+            if self.draw_mode:
+                self.cancel_draw_mode()
+            else:
+                self.start_draw_mode()
+        elif action == copy_action:
+            self.copy_to_clipboard()
+
+    def start_draw_mode(self):
+        self.draw_mode = 'pencil'
+        self.toolbar.show()
+        self.toolbar.raise_()
+
+    def cancel_draw_mode(self):
+        self.draw_mode = None
+        self.toolbar.hide()
+
+    def set_pencil_mode(self):
+        self.draw_mode = 'pencil'
+
+    def set_rect_mode(self):
+        self.draw_mode = 'rect'
+
+    def copy_to_clipboard(self):
+        result = self.original_pixmap.copy()
+        painter = QtGui.QPainter(result)
+        painter.drawPixmap(0, 0, self.canvas)
+        painter.end()
+        QtWidgets.QApplication.clipboard().setPixmap(result)
 
     def closeEvent(self, event):
-        # 从主窗口的列表移除自己
         if self in self.parent_tool.floating_images:
             self.parent_tool.floating_images.remove(self)
         event.accept()

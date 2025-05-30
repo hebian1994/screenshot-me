@@ -20,8 +20,8 @@ def get_screen_pixmap(screen_index=0):
         h, w, _ = img.shape
         bytes_per_line = 4 * w
         image = QtGui.QImage(img.data, w, h, bytes_per_line, QtGui.QImage.Format.Format_ARGB32)
-        return QtGui.QPixmap.fromImage(image), QtCore.QRect(monitor["left"], monitor["top"], monitor["width"], monitor["height"])
-
+        return QtGui.QPixmap.fromImage(image), QtCore.QRect(monitor["left"], monitor["top"], monitor["width"],
+                                                            monitor["height"])
 
 
 class ScreenshotTool(QtWidgets.QMainWindow):
@@ -49,7 +49,7 @@ class ScreenshotTool(QtWidgets.QMainWindow):
 
     def show_floating_image(self, global_pos, pixmap):
         self.show()
-        overlay = FloatingImage(pixmap)
+        overlay = FloatingImage(pixmap, self)
         overlay.move(global_pos)
         overlay.show()
         self.floating_images.append(overlay)
@@ -113,8 +113,10 @@ class SnipOverlay(QtWidgets.QWidget):
 
 
 class FloatingImage(QtWidgets.QLabel):
-    def __init__(self, pixmap):
+    def __init__(self, pixmap, parent_tool):
         super().__init__()
+        self.parent_tool = parent_tool  # 保存主窗口引用，用于管理列表
+
         self.setPixmap(pixmap)
         self.setWindowFlags(
             QtCore.Qt.WindowStaysOnTopHint |
@@ -144,6 +146,12 @@ class FloatingImage(QtWidgets.QLabel):
         action = menu.exec(self.mapToGlobal(pos))
         if action == close_action:
             self.close()
+
+    def closeEvent(self, event):
+        # 从主窗口的列表移除自己
+        if self in self.parent_tool.floating_images:
+            self.parent_tool.floating_images.remove(self)
+        event.accept()
 
 
 if __name__ == "__main__":

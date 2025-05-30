@@ -20,7 +20,8 @@ def get_screen_pixmap(screen_index=0):
         h, w, _ = img.shape
         bytes_per_line = 4 * w
         image = QtGui.QImage(img.data, w, h, bytes_per_line, QtGui.QImage.Format.Format_ARGB32)
-        return QtGui.QPixmap.fromImage(image), QtCore.QRect(monitor["left"], monitor["top"], monitor["width"], monitor["height"])
+        return QtGui.QPixmap.fromImage(image), QtCore.QRect(monitor["left"], monitor["top"], monitor["width"],
+                                                            monitor["height"])
 
 
 class ScreenshotTool(QtWidgets.QMainWindow):
@@ -225,9 +226,11 @@ class FloatingImage(QtWidgets.QWidget):
             self.copy_to_clipboard()
 
     def start_draw_mode(self):
-        self.draw_mode = 'pencil'
-        self.toolbar.move(self.x() - self.toolbar.width() - 10, self.y())
+        self.draw_mode = 'pencil'  # 默认铅笔
         self.toolbar.show()
+        self.toolbar.raise_()
+        # 延迟调整工具栏位置，确保窗口和布局已准备好
+        QtCore.QTimer.singleShot(0, self.adjust_toolbar_position)
 
     def cancel_draw_mode(self):
         self.draw_mode = None

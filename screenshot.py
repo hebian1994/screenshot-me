@@ -5,7 +5,6 @@ from PySide6 import QtWidgets, QtGui, QtCore
 
 
 def get_screen_index_from_cursor(pos: QtCore.QPoint):
-    """返回鼠标所在屏幕的索引"""
     for i, screen in enumerate(QtWidgets.QApplication.screens()):
         if screen.geometry().contains(pos):
             return i
@@ -13,16 +12,16 @@ def get_screen_index_from_cursor(pos: QtCore.QPoint):
 
 
 def get_screen_pixmap(screen_index=0):
-    """使用 mss 截图指定屏幕，返回 QPixmap 和该屏幕的 QRect"""
     with mss.mss() as sct:
-        monitor = sct.monitors[screen_index + 1]  # mss 的屏幕从 1 开始
+        monitor = sct.monitors[screen_index + 1]
         sct_img = sct.grab(monitor)
         img = np.array(sct_img)  # BGRA
 
         h, w, _ = img.shape
         bytes_per_line = 4 * w
-        image = QtGui.QImage(img.data, w, h, bytes_per_line, QtGui.QImage.Format_RGBA8888)
+        image = QtGui.QImage(img.data, w, h, bytes_per_line, QtGui.QImage.Format.Format_ARGB32)
         return QtGui.QPixmap.fromImage(image), QtCore.QRect(monitor["left"], monitor["top"], monitor["width"], monitor["height"])
+
 
 
 class ScreenshotTool(QtWidgets.QMainWindow):
@@ -35,7 +34,7 @@ class ScreenshotTool(QtWidgets.QMainWindow):
         self.btn.clicked.connect(self.start_snipping)
         self.setCentralWidget(self.btn)
 
-        self.floating_images = []  # ✅ 保存贴图，避免被销毁
+        self.floating_images = []
 
     def start_snipping(self):
         self.hide()
@@ -44,7 +43,7 @@ class ScreenshotTool(QtWidgets.QMainWindow):
         screen_index = get_screen_index_from_cursor(cursor_pos)
         self.pixmap, self.screen_geometry = get_screen_pixmap(screen_index)
 
-        self.snip = SnipOverlay(self.pixmap, self.screen_geometry)
+        self.snip = SnipOverlay(self.screen_geometry)
         self.snip.snip_done.connect(self.show_floating_image)
         self.snip.showFullScreen()
 
@@ -53,27 +52,27 @@ class ScreenshotTool(QtWidgets.QMainWindow):
         overlay = FloatingImage(pixmap)
         overlay.move(global_pos)
         overlay.show()
-        self.floating_images.append(overlay)  # ✅ 防止被垃圾回收
+        self.floating_images.append(overlay)
 
 
 class SnipOverlay(QtWidgets.QWidget):
     snip_done = QtCore.Signal(QtCore.QPoint, QtGui.QPixmap)
 
-    def __init__(self, background_pixmap, screen_geometry):
+    def __init__(self, screen_geometry):
         super().__init__()
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setCursor(QtCore.Qt.CrossCursor)
 
-        self.background_pixmap = background_pixmap
         self.screen_geometry = screen_geometry
-
         self.begin = QtCore.QPoint()
         self.end = QtCore.QPoint()
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.drawPixmap(self.screen_geometry.topLeft(), self.background_pixmap)
+        # 绘制灰色半透明遮罩
+        painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 80))
+
         if not self.begin.isNull() and not self.end.isNull():
             rect = QtCore.QRect(self.begin, self.end)
             painter.setPen(QtGui.QPen(QtCore.Qt.red, 2))
@@ -93,12 +92,23 @@ class SnipOverlay(QtWidgets.QWidget):
         self.end = event.globalPosition().toPoint()
         rect = QtCore.QRect(self.begin, self.end).normalized()
 
-        relative_rect = QtCore.QRect(
-            rect.topLeft() - self.screen_geometry.topLeft(),
-            rect.size()
-        )
-        cropped = self.background_pixmap.copy(relative_rect)
-        self.snip_done.emit(rect.topLeft(), cropped)
+        # 因为没背景图，所以用 mss 重新截一次屏幕对应区域
+        with mss.mss() as sct:
+            monitor = {
+                "left": rect.left(),
+                "top": rect.top(),
+                "width": rect.width(),
+                "height": rect.height()
+            }
+            sct_img = sct.grab(monitor)
+            img = np.array(sct_img)
+
+        h, w, _ = img.shape
+        bytes_per_line = 4 * w
+        image = QtGui.QImage(img.data, w, h, bytes_per_line, QtGui.QImage.Format_ARGB32)
+        cropped_pixmap = QtGui.QPixmap.fromImage(image)
+
+        self.snip_done.emit(rect.topLeft(), cropped_pixmap)
         self.close()
 
 
@@ -137,7 +147,6 @@ class FloatingImage(QtWidgets.QLabel):
 
 
 if __name__ == "__main__":
-    # ✅ 必须启用高 DPI 支持
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps)
 

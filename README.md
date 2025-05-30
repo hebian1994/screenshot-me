@@ -105,4 +105,4 @@ and right clicking on the image allows you to choose to destroy it.
 
 
 
-![image-20250530213335258](.\README.assets\image-20250530213335258.png)
+![image-20250530213335258](.\assets\image-20250530213335258.png)

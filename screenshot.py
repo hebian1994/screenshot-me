@@ -2,8 +2,39 @@ import sys
 import mss
 import numpy as np
 from PySide6 import QtWidgets, QtGui, QtCore
+import ctypes
+from ctypes import wintypes
+import win32con
+import win32gui
+import pywintypes
 
 
+# ----------------- 热键监听类 -----------------
+class HotkeyListener(QtCore.QAbstractNativeEventFilter):
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+
+    def nativeEventFilter(self, event_type, message):
+        if event_type == "windows_generic_MSG":
+            msg = ctypes.wintypes.MSG.from_address(message.__int__())
+            if msg.message == win32con.WM_HOTKEY:
+                self.callback()
+        return False, 0
+
+
+def register_global_hotkey(modifiers, key_id, vk_code):
+    try:
+        win32gui.RegisterHotKey(None, key_id, modifiers, vk_code)
+    except pywintypes.error as e:
+        raise RuntimeError(f"快捷键注册失败！{e}")
+
+
+def unregister_global_hotkey(key_id):
+    win32gui.UnregisterHotKey(None, key_id)
+
+
+# ----------------- 截图辅助函数 -----------------
 def get_screen_index_from_cursor(pos: QtCore.QPoint):
     for i, screen in enumerate(QtWidgets.QApplication.screens()):
         if screen.geometry().contains(pos):
@@ -15,8 +46,7 @@ def get_screen_pixmap(screen_index=0):
     with mss.mss() as sct:
         monitor = sct.monitors[screen_index + 1]
         sct_img = sct.grab(monitor)
-        img = np.array(sct_img)  # BGRA
-
+        img = np.array(sct_img)
         h, w, _ = img.shape
         bytes_per_line = 4 * w
         image = QtGui.QImage(img.data, w, h, bytes_per_line, QtGui.QImage.Format.Format_ARGB32)
@@ -24,6 +54,7 @@ def get_screen_pixmap(screen_index=0):
                                                             monitor["height"])
 
 
+# ----------------- 主窗口 -----------------
 class ScreenshotTool(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -36,9 +67,20 @@ class ScreenshotTool(QtWidgets.QMainWindow):
 
         self.floating_images = []
 
+        # 注册快捷键 Ctrl+Shift+F1
+        self.hotkey_id = 1001
+        # register_global_hotkey(win32con.MOD_CONTROL | win32con.MOD_SHIFT, self.hotkey_id, win32con.VK_F1)
+        # 替换为 Ctrl + Alt + X（很少冲突）
+        register_global_hotkey(win32con.MOD_CONTROL | win32con.MOD_ALT, 1001, ord('X'))
+
+        self.hotkey_filter = HotkeyListener(self.on_hotkey_triggered)
+        QtCore.QCoreApplication.instance().installNativeEventFilter(self.hotkey_filter)
+
+    def on_hotkey_triggered(self):
+        self.start_snipping()
+
     def start_snipping(self):
         self.hide()
-
         cursor_pos = QtGui.QCursor.pos()
         screen_index = get_screen_index_from_cursor(cursor_pos)
         self.pixmap, self.screen_geometry = get_screen_pixmap(screen_index)
@@ -54,7 +96,12 @@ class ScreenshotTool(QtWidgets.QMainWindow):
         overlay.show()
         self.floating_images.append(overlay)
 
+    def closeEvent(self, event):
+        unregister_global_hotkey(self.hotkey_id)
+        event.accept()
 
+
+# ----------------- 截图区域选择 -----------------
 class SnipOverlay(QtWidgets.QWidget):
     snip_done = QtCore.Signal(QtCore.QPoint, QtGui.QPixmap)
 
@@ -63,7 +110,6 @@ class SnipOverlay(QtWidgets.QWidget):
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setCursor(QtCore.Qt.CrossCursor)
-
         self.screen_geometry = screen_geometry
         self.begin = QtCore.QPoint()
         self.end = QtCore.QPoint()
@@ -89,7 +135,6 @@ class SnipOverlay(QtWidgets.QWidget):
     def mouseReleaseEvent(self, event):
         self.end = event.globalPosition().toPoint()
         rect = QtCore.QRect(self.begin, self.end).normalized()
-
         with mss.mss() as sct:
             monitor = {
                 "left": rect.left(),
@@ -99,16 +144,15 @@ class SnipOverlay(QtWidgets.QWidget):
             }
             sct_img = sct.grab(monitor)
             img = np.array(sct_img)
-
         h, w, _ = img.shape
         bytes_per_line = 4 * w
         image = QtGui.QImage(img.data, w, h, bytes_per_line, QtGui.QImage.Format_ARGB32)
         cropped_pixmap = QtGui.QPixmap.fromImage(image)
-
         self.snip_done.emit(rect.topLeft(), cropped_pixmap)
         self.close()
 
 
+# ----------------- 图像展示及绘图 -----------------
 class CanvasLabel(QtWidgets.QLabel):
     def __init__(self, pixmap, canvas):
         super().__init__()
@@ -127,13 +171,11 @@ class FloatingImage(QtWidgets.QWidget):
         super().__init__()
         self.parent_tool = parent_tool
         self.setWindowFlags(QtCore.Qt.WindowStaysOnTopHint | QtCore.Qt.FramelessWindowHint | QtCore.Qt.Tool)
-
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_menu)
 
         self.canvas = QtGui.QPixmap(pixmap.size())
         self.canvas.fill(QtCore.Qt.transparent)
-
         self.image_label = CanvasLabel(pixmap, self.canvas)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -142,7 +184,6 @@ class FloatingImage(QtWidgets.QWidget):
 
         self.resize(pixmap.size())
         self.old_pos = None
-
         self.drawing = False
         self.draw_mode = None
         self.last_point = None
@@ -214,7 +255,6 @@ class FloatingImage(QtWidgets.QWidget):
         copy_action = menu.addAction("复制图片")
 
         action = menu.exec(self.mapToGlobal(pos))
-
         if action == close_action:
             self.close()
         elif action == draw_action:
@@ -226,16 +266,18 @@ class FloatingImage(QtWidgets.QWidget):
             self.copy_to_clipboard()
 
     def start_draw_mode(self):
-        self.draw_mode = 'pencil'  # 默认铅笔
+        self.draw_mode = 'pencil'
         self.toolbar.show()
         self.toolbar.raise_()
-        # 延迟调整工具栏位置，确保窗口和布局已准备好
         QtCore.QTimer.singleShot(0, self.adjust_toolbar_position)
 
     def cancel_draw_mode(self):
         self.draw_mode = None
         self.toolbar.hide()
         self.image_label.update()
+
+    def adjust_toolbar_position(self):
+        self.toolbar.move(self.geometry().topLeft() + QtCore.QPoint(10, 10))
 
     def set_pencil_mode(self):
         self.draw_mode = 'pencil'
@@ -259,10 +301,10 @@ class FloatingImage(QtWidgets.QWidget):
         event.accept()
 
 
+# ----------------- 主程序入口 -----------------
 if __name__ == "__main__":
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps)
-
     app = QtWidgets.QApplication(sys.argv)
     window = ScreenshotTool()
     window.show()

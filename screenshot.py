@@ -67,12 +67,8 @@ class ScreenshotTool(QtWidgets.QMainWindow):
 
         self.floating_images = []
 
-        # 注册快捷键 Ctrl+Shift+F1
         self.hotkey_id = 1001
-        # register_global_hotkey(win32con.MOD_CONTROL | win32con.MOD_SHIFT, self.hotkey_id, win32con.VK_F1)
-        # 替换为 Ctrl + Alt + X（很少冲突）
-        register_global_hotkey(win32con.MOD_CONTROL | win32con.MOD_ALT, 1001, ord('X'))
-
+        register_global_hotkey(win32con.MOD_CONTROL | win32con.MOD_ALT, self.hotkey_id, ord('X'))
         self.hotkey_filter = HotkeyListener(self.on_hotkey_triggered)
         QtCore.QCoreApplication.instance().installNativeEventFilter(self.hotkey_filter)
 
@@ -116,7 +112,8 @@ class SnipOverlay(QtWidgets.QWidget):
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 80))
+        painter.fillRect(self.rect(), QtGui.QColor(255, 255, 255, 1))
+
         if not self.begin.isNull() and not self.end.isNull():
             rect = QtCore.QRect(self.begin, self.end)
             painter.setPen(QtGui.QPen(QtCore.Qt.red, 2))
@@ -154,16 +151,25 @@ class SnipOverlay(QtWidgets.QWidget):
 
 # ----------------- 图像展示及绘图 -----------------
 class CanvasLabel(QtWidgets.QLabel):
-    def __init__(self, pixmap, canvas):
+    def __init__(self, pixmap, canvas, floating_image):
         super().__init__()
         self._pixmap = pixmap
         self._canvas = canvas
+        self._floating_image = floating_image
         self.setFixedSize(pixmap.size())
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
         painter.drawPixmap(0, 0, self._pixmap)
         painter.drawPixmap(0, 0, self._canvas)
+
+        fi = self._floating_image
+        if fi.drawing and fi.draw_mode == 'rect' and fi.start_point and fi.end_point:
+            pen = QtGui.QPen(QtCore.Qt.red, 2, QtCore.Qt.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(QtCore.Qt.transparent)
+            rect = QtCore.QRect(fi.start_point, fi.end_point).normalized()
+            painter.drawRect(rect)
 
 
 class FloatingImage(QtWidgets.QWidget):
@@ -176,7 +182,7 @@ class FloatingImage(QtWidgets.QWidget):
 
         self.canvas = QtGui.QPixmap(pixmap.size())
         self.canvas.fill(QtCore.Qt.transparent)
-        self.image_label = CanvasLabel(pixmap, self.canvas)
+        self.image_label = CanvasLabel(pixmap, self.canvas, self)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -266,7 +272,9 @@ class FloatingImage(QtWidgets.QWidget):
             self.copy_to_clipboard()
 
     def start_draw_mode(self):
-        self.draw_mode = 'pencil'
+        # self.draw_mode = 'pencil'
+        # 默认绘制工具为矩形
+        self.draw_mode = 'rect'
         self.toolbar.show()
         self.toolbar.raise_()
         QtCore.QTimer.singleShot(0, self.adjust_toolbar_position)

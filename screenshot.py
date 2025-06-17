@@ -160,21 +160,29 @@ class CanvasLabel(QtWidgets.QLabel):
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
-        painter.drawPixmap(0, 0, self._pixmap)
-        painter.drawPixmap(0, 0, self._canvas)
+
+        pixmap = getattr(self, '_scaled_pixmap', self._pixmap)
+        canvas = getattr(self, '_scaled_canvas', self._canvas)
+
+        painter.drawPixmap(0, 0, pixmap)
+        painter.drawPixmap(0, 0, canvas)
 
         fi = self._floating_image
         if fi.drawing and fi.draw_mode == 'rect' and fi.start_point and fi.end_point:
             pen = QtGui.QPen(QtCore.Qt.red, 2, QtCore.Qt.DashLine)
             painter.setPen(pen)
             painter.setBrush(QtCore.Qt.transparent)
-            rect = QtCore.QRect(fi.start_point, fi.end_point).normalized()
+
+            scale = fi.scale_factor
+            rect = QtCore.QRectF(fi.start_point, fi.end_point).normalized()
+            rect = QtCore.QRectF(rect.topLeft() * scale, rect.bottomRight() * scale)
             painter.drawRect(rect)
 
 
 class FloatingImage(QtWidgets.QWidget):
     def __init__(self, pixmap, parent_tool):
         super().__init__()
+        self.scale_factor = 1.0
         self.parent_tool = parent_tool
         self.setWindowFlags(QtCore.Qt.WindowStaysOnTopHint | QtCore.Qt.FramelessWindowHint | QtCore.Qt.Tool)
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -212,26 +220,64 @@ class FloatingImage(QtWidgets.QWidget):
         self.btn_pencil.clicked.connect(self.set_pencil_mode)
         self.btn_rect.clicked.connect(self.set_rect_mode)
         self.btn_cancel.clicked.connect(self.cancel_draw_mode)
+        self.apply_scaling()  # 初始加载，确保 _scaled_* 存在
+
+    def wheelEvent(self, event):
+        angle = event.angleDelta().y()
+        factor = 1.1 if angle > 0 else 0.9
+        new_scale = self.scale_factor * factor
+
+        # 限制缩放比例范围
+        if 0.2 <= new_scale <= 5.0:
+            self.scale_factor = new_scale
+            self.apply_scaling()
+
+    def apply_scaling(self):
+        scaled_pixmap = self.image_label._pixmap.scaled(
+            self.image_label._pixmap.size() * self.scale_factor,
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation
+        )
+
+        scaled_canvas = self.canvas.scaled(
+            self.canvas.size() * self.scale_factor,
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation
+        )
+
+        self.image_label._scaled_pixmap = scaled_pixmap
+        self.image_label._scaled_canvas = scaled_canvas
+
+        self.image_label.setFixedSize(scaled_pixmap.size())
+        self.resize(scaled_pixmap.size())
+        self.image_label.update()
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             if self.draw_mode in ('pencil', 'rect'):
                 self.drawing = True
-                self.start_point = event.pos()
-                self.last_point = event.pos()
+                pos = event.position().toPoint() / self.scale_factor
+                self.start_point = pos
+                self.last_point = pos
             else:
                 self.old_pos = event.globalPosition().toPoint()
 
     def mouseMoveEvent(self, event):
         if self.drawing and self.draw_mode == 'pencil':
+            pos = event.position().toPoint() / self.scale_factor
             painter = QtGui.QPainter(self.canvas)
             pen = QtGui.QPen(QtCore.Qt.red, 2)
             painter.setPen(pen)
-            painter.drawLine(self.last_point, event.pos())
-            self.last_point = event.pos()
+            painter.drawLine(self.last_point, pos)
+            self.last_point = pos
+
+            # 修复：刷新 scaled_canvas
+            self.apply_scaling()
+
+            self.last_point = pos
             self.image_label.update()
         elif self.drawing and self.draw_mode == 'rect':
-            self.end_point = event.pos()
+            self.end_point = event.position().toPoint() / self.scale_factor
             self.image_label.update()
         elif event.buttons() & QtCore.Qt.LeftButton and self.draw_mode is None:
             delta = event.globalPosition().toPoint() - self.old_pos
@@ -240,11 +286,16 @@ class FloatingImage(QtWidgets.QWidget):
 
     def mouseReleaseEvent(self, event):
         if self.drawing and self.draw_mode == 'rect':
+            end = event.position().toPoint() / self.scale_factor
             painter = QtGui.QPainter(self.canvas)
             pen = QtGui.QPen(QtCore.Qt.red, 2)
             painter.setPen(pen)
-            rect = QtCore.QRect(self.start_point, event.pos()).normalized()
+            rect = QtCore.QRectF(self.start_point, end).normalized()
             painter.drawRect(rect)
+
+            # 修复：刷新 scaled_canvas
+            self.apply_scaling()
+
             self.image_label.update()
 
         self.drawing = False
